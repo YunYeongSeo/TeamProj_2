@@ -1,0 +1,9 @@
+flask
+sqlalchemy
+pymysql
+bcrypt
+opencv-python
+numpy
+pyzbar
+gpiozero
+pigpio
