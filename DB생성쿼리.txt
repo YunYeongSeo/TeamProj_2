@@ -1,0 +1,137 @@
+CREATE TABLE `barcode_detection_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `barcode` varchar(20) NOT NULL,
+  `product_name` varchar(100) DEFAULT NULL,
+  `confidence` decimal(5,2) DEFAULT NULL,
+  `image_path` varchar(255) DEFAULT NULL COMMENT '이미지 파일 경로',
+  `image_filename` varchar(100) DEFAULT NULL COMMENT '이미지 파일명',
+  `detected_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `bbox_x1` int DEFAULT NULL COMMENT '바운딩박스 좌상단 X',
+  `bbox_y1` int DEFAULT NULL COMMENT '바운딩박스 좌상단 Y',
+  `bbox_x2` int DEFAULT NULL COMMENT '바운딩박스 우하단 X',
+  `bbox_y2` int DEFAULT NULL COMMENT '바운딩박스 우하단 Y',
+  PRIMARY KEY (`id`),
+  KEY `idx_barcode` (`barcode`),
+  KEY `idx_detected_at` (`detected_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `chat_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `client_id` varchar(64) DEFAULT NULL,
+  `event_type` enum('msg','alert','status') NOT NULL,
+  `content` text,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `chat_message` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `sender_emp_no` varchar(32) NOT NULL,
+  `content` text NOT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `created_at` (`created_at`),
+  KEY `sender_emp_no` (`sender_emp_no`)
+) ENGINE=InnoDB AUTO_INCREMENT=107 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `environment_logs` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `temperature` decimal(5,2) NOT NULL COMMENT '온도 (°C)',
+  `humidity` decimal(5,2) NOT NULL COMMENT '습도 (%)',
+  `recorded_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '기록 시간',
+  `log_type` enum('startup','scheduled','manual') COLLATE utf8mb4_unicode_ci DEFAULT 'scheduled' COMMENT '기록 유형',
+  PRIMARY KEY (`id`),
+  KEY `idx_recorded_at` (`recorded_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='온습도 기록';
+
+CREATE TABLE `line_metric` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `line_id` varchar(32) NOT NULL,
+  `metric` varchar(32) NOT NULL,
+  `value` double NOT NULL,
+  `ts` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `line_id` (`line_id`,`metric`,`ts`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `login_history` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `emp_no` varchar(20) NOT NULL,
+  `session_id` varchar(64) DEFAULT NULL,
+  `session_type` enum('WEB','TCP') DEFAULT 'TCP',
+  `client_ip` varchar(45) DEFAULT NULL,
+  `login_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `logout_time` timestamp NULL DEFAULT NULL,
+  `session_duration` int DEFAULT '0' COMMENT '세션 지속 시간(초)',
+  `login_status` enum('SUCCESS','FAIL') DEFAULT 'SUCCESS',
+  `fail_reason` varchar(100) DEFAULT NULL,
+  `user_agent` varchar(200) DEFAULT NULL COMMENT '접속 클라이언트 정보',
+  PRIMARY KEY (`id`),
+  KEY `idx_emp_no` (`emp_no`),
+  KEY `idx_login_time` (`login_time`),
+  KEY `idx_session_id` (`session_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=300 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `notifications` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `type` enum('BARCODE_DETECTION','ENVIRONMENT_ALERT','SYSTEM_ALERT','USER_ACTION','ERROR','MAINTENANCE','PRODUCTION') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '알림 유형',
+  `title` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '알림 제목',
+  `message` text COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '알림 내용',
+  `severity` enum('INFO','WARNING','ERROR','CRITICAL') COLLATE utf8mb4_unicode_ci DEFAULT 'INFO' COMMENT '심각도',
+  `data` json DEFAULT NULL COMMENT '추가 데이터 (바코드, 온습도 등)',
+  `image_url` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '관련 이미지 URL',
+  `is_read` tinyint(1) DEFAULT '0' COMMENT '읽음 여부',
+  `read_at` timestamp NULL DEFAULT NULL COMMENT '읽은 시간',
+  `created_by` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '생성자 (사원번호)',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '생성 시간',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '수정 시간',
+  PRIMARY KEY (`id`),
+  KEY `idx_type` (`type`),
+  KEY `idx_severity` (`severity`),
+  KEY `idx_is_read` (`is_read`),
+  KEY `idx_created_at` (`created_at`),
+  KEY `idx_type_is_read` (`type`,`is_read`),
+  KEY `idx_created_by` (`created_by`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='통합 알림 테이블';
+
+CREATE TABLE `user_account` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `emp_no` varchar(32) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `role` enum('ADMIN','STAFF') NOT NULL,
+  `joined_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_emp_no` (`emp_no`)
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `user_session` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `emp_no` varchar(20) NOT NULL,
+  `session_id` varchar(64) NOT NULL,
+  `session_type` enum('WEB','TCP') DEFAULT 'TCP',
+  `client_ip` varchar(45) DEFAULT NULL,
+  `login_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_activity` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_active` tinyint(1) DEFAULT '1',
+  `is_temporary` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `session_id` (`session_id`),
+  KEY `idx_emp_no` (`emp_no`),
+  KEY `idx_session_id` (`session_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=430 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;CREATE TABLE `user_session` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `emp_no` varchar(20) NOT NULL,
+  `session_id` varchar(64) NOT NULL,
+  `session_type` enum('WEB','TCP') DEFAULT 'TCP',
+  `client_ip` varchar(45) DEFAULT NULL,
+  `login_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_activity` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_active` tinyint(1) DEFAULT '1',
+  `is_temporary` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `session_id` (`session_id`),
+  KEY `idx_emp_no` (`emp_no`),
+  KEY `idx_session_id` (`session_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=430 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

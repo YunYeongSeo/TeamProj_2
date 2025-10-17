@@ -1,0 +1,320 @@
+# file: rpi_cam1_conveyor_client.py
+# 목적:
+#  - 카메라 JPEG 프레임을 중앙 Flask 서버로 업로드 (/upload_frame)
+#  - 컨베이어는 라즈베리에서 '기본: 2s 전진 → 1.5s 정지' 루프
+#  - 서버의 "원하는 상태(start/stop)"를 폴링하여 루프 ON/OFF
+#
+# 서버 측 요구(아래 중 하나만 구현되어도 동작):
+#   GET /api/conveyor/desired  → JSON { "run": true|false }  (권장)
+#                            또는 JSON { "mode": "start"|"stop" }
+#                            또는 JSON { "desired": "start"|"stop" }
+#                            또는 평문 "start" / "stop"
+#
+# 네트워크 오류나 404일 경우: 마지막 상태 유지(안전)
+
+import cv2
+import time
+import requests
+import threading
+from queue import Queue, Empty
+import signal
+import traceback
+
+# =========================
+# 구성
+# =========================
+SERVER_HOST = "192.168.0.87"    # ★ Flask 서버 IP (PC)
+SERVER_PORT = 8000
+
+UPLOAD_URL  = f"http://{SERVER_HOST}:{SERVER_PORT}/upload_frame"
+CONTROL_URL = f"http://{SERVER_HOST}:{SERVER_PORT}/api/conveyor/desired"   # 존재하지 않아도 됨(유연 파싱)
+
+FRAME_W, FRAME_H, FRAME_FPS = 640, 480, 30
+JPEG_QUALITY = 80
+QUEUE_MAX = 2
+
+# 컨베이어 핀 및 루프 타이밍(기본)
+FORWARD_PIN = 17
+BACKWARD_PIN = 27
+FORWARD_SEC = 2.0
+PAUSE_SEC   = 1.5
+
+# 폴링 간격/타임아웃
+POLL_INTERVAL = 0.3     # 서버 상태 확인 주기
+HTTP_TIMEOUT  = 0.8
+
+# =========================
+# 종료 이벤트
+# =========================
+stop_event = threading.Event()
+
+# =========================
+# 상태 공유
+# =========================
+class SharedState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._should_run = True   # 기본: 루프 ON (2s→1.5s)
+        self._last_update_ts = 0
+
+    def set_should_run(self, val: bool):
+        with self._lock:
+            self._should_run = bool(val)
+            self._last_update_ts = time.time()
+
+    def get_should_run(self) -> bool:
+        with self._lock:
+            return self._should_run
+
+    def last_update_age(self) -> float:
+        with self._lock:
+            if self._last_update_ts == 0:
+                return 1e9
+            return time.time() - self._last_update_ts
+
+state = SharedState()
+
+# =========================
+# 카메라 업로더
+# =========================
+class CameraUploader:
+    def __init__(self):
+        self.q = Queue(maxsize=QUEUE_MAX)
+        self.frame_count = 0
+        self.last_stats = time.time()
+        self.total_sent = 0
+
+    def _open_camera(self):
+        cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            print("❌ 카메라 열기 실패")
+            return None
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+        cap.set(cv2.CAP_PROP_FPS,         FRAME_FPS)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE,  1)
+
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"✅ 카메라 설정: {actual_w}x{actual_h}@{actual_fps:.0f}fps")
+        return cap
+
+    def capture_loop(self):
+        cap = self._open_camera()
+        if cap is None:
+            return
+        try:
+            interval = max(1.0/FRAME_FPS, 0.001)
+            while not stop_event.is_set():
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.01)
+                    continue
+                enc_ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                if enc_ok:
+                    jpg = buf.tobytes()
+                    try:
+                        self.q.put_nowait(jpg)
+                    except:
+                        try:
+                            self.q.get_nowait()
+                            self.q.put_nowait(jpg)
+                        except:
+                            pass
+                self.frame_count += 1
+                time.sleep(interval)
+        except Exception as e:
+            print("[Camera] capture_loop error:", e)
+            traceback.print_exc()
+        finally:
+            cap.release()
+            print("[Camera] 캡처 종료")
+
+    def upload_loop(self):
+        sess = requests.Session()
+        while not stop_event.is_set():
+            try:
+                jpg = self.q.get(timeout=0.2)
+            except Empty:
+                time.sleep(0.01)
+                continue
+            try:
+                r = sess.post(UPLOAD_URL, data=jpg, timeout=HTTP_TIMEOUT)
+                if r.status_code == 200:
+                    self.total_sent += 1
+            except Exception:
+                pass
+
+    def stats_loop(self):
+        while not stop_event.is_set():
+            time.sleep(10)
+            elapsed = time.time() - self.last_stats
+            fps = self.frame_count / elapsed if elapsed > 0 else 0.0
+            print(f"📊 업로드 FPS: {fps:.1f}, 누적 전송: {self.total_sent}")
+            self.frame_count = 0
+            self.last_stats = time.time()
+
+# =========================
+# 모터 (로컬 제어)
+# =========================
+def build_motor():
+    try:
+        from gpiozero import Motor
+        try:
+            # pigpio가 있으면 더 정확한 타이밍
+            from gpiozero.pins.pigpio import PiGPIOFactory
+            factory = PiGPIOFactory()   # 로컬(pigpiod) 자동 접속
+        except Exception:
+            factory = None
+        m = Motor(forward=FORWARD_PIN, backward=BACKWARD_PIN, pin_factory=factory, pwm=False)
+        print(f"[Conveyor] HW 준비됨 (FWD={FORWARD_PIN}, BWD={BACKWARD_PIN})")
+        return m
+    except Exception as e:
+        print("[Conveyor] HW 없음(모의모드):", e)
+        return None
+
+def conveyor_loop(motor):
+    """
+    상태(state.should_run)에 따라:
+      - True  → (2.0s 전진 → 1.5s 정지) 루프 반복
+      - False → 완전 정지 유지
+    """
+    print(f"[Conveyor] 기본 루프: {FORWARD_SEC}s 전진 → {PAUSE_SEC}s 정지 (서버 상태로 ON/OFF)")
+    try:
+        while not stop_event.is_set():
+            if state.get_should_run():
+                # 전진
+                if motor:
+                    motor.forward()
+                t0 = time.time()
+                while not stop_event.is_set() and (time.time() - t0) < FORWARD_SEC:
+                    # 중간에 STOP 지시가 오면 즉시 정지
+                    if not state.get_should_run():
+                        break
+                    time.sleep(0.01)
+
+                # 정지
+                if motor:
+                    motor.stop()
+
+                # STOP 지시가 왔으면 정지 상태 유지로 전환
+                if not state.get_should_run():
+                    # 바로 다음 루프로 넘어가 False 분기에서 유지
+                    continue
+
+                # 기본 정지 시간
+                t1 = time.time()
+                while not stop_event.is_set() and (time.time() - t1) < PAUSE_SEC:
+                    if not state.get_should_run():
+                        break
+                    time.sleep(0.01)
+            else:
+                # 원하는 상태가 STOP이면 정지 유지
+                if motor:
+                    motor.stop()
+                time.sleep(0.05)
+    finally:
+        if motor:
+            try:
+                motor.stop()
+                motor.close()
+            except Exception:
+                pass
+        print("[Conveyor] 루프 종료")
+
+# =========================
+# 서버 폴링 (원하는 상태 받아오기)
+# =========================
+def _parse_desired_run(resp) -> object:
+    """
+    응답에서 run(True/False) 추출.
+    - JSON: { "run": bool } 또는 { "mode": "start"|"stop" } 또는 { "desired": "start"|"stop" }
+    - 평문: "start"/"stop" / "on"/"off" / "1"/"0" / "true"/"false"
+    인식 실패 시 None 반환.
+    """
+    try:
+        js = resp.json()
+        if isinstance(js, dict):
+            if "run" in js:
+                return bool(js["run"])
+            if "mode" in js:
+                return str(js["mode"]).lower() in ("start", "run", "on", "1", "true")
+            if "desired" in js:
+                return str(js["desired"]).lower() in ("start", "run", "on", "1", "true")
+    except Exception:
+        pass
+    try:
+        txt = resp.text.strip().lower()
+        if txt in ("start", "run", "on", "1", "true", "go"):
+            return True
+        if txt in ("stop", "off", "0", "false", "halt"):
+            return False
+    except Exception:
+        pass
+    return None
+
+def poll_server_loop():
+    sess = requests.Session()
+    backoff = POLL_INTERVAL
+    while not stop_event.is_set():
+        try:
+            r = sess.get(CONTROL_URL, timeout=HTTP_TIMEOUT)
+            if r.status_code == 200:
+                desired = _parse_desired_run(r)
+                if desired is not None:
+                    prev = state.get_should_run()
+                    if desired != prev:
+                        print(f"[Conveyor] 서버 지시: {'START' if desired else 'STOP'}")
+                        state.set_should_run(desired)
+                backoff = POLL_INTERVAL     # 성공했으면 간격 복구
+            else:
+                # 404나 기타 오류: 마지막 상태 유지
+                pass
+        except Exception:
+            # 순간 장애: 마지막 상태 유지
+            pass
+
+        # 점진 backoff (최대 2초)
+        time.sleep(backoff)
+        if backoff < 2.0:
+            backoff = min(2.0, backoff + 0.1)
+
+# =========================
+# 메인
+# =========================
+def main():
+    print("=" * 60)
+    print("📹 Camera Uploader + ⚙️ Conveyor (local loop; server-driven ON/OFF)")
+    print("=" * 60)
+    print(f"- 서버 업로드: {UPLOAD_URL}")
+    print(f"- 상태 폴링:   {CONTROL_URL}  (0.3s 주기)")
+    print(f"- 컨베이어 기본 루프: forward {FORWARD_SEC}s → pause {PAUSE_SEC}s")
+    print("=" * 60)
+
+    def _sig(signum, frame):
+        stop_event.set()
+    signal.signal(signal.SIGINT, _sig)
+    signal.signal(signal.SIGTERM, _sig)
+
+    # 카메라 스레드들
+    cam = CameraUploader()
+    threading.Thread(target=cam.capture_loop, daemon=True).start()
+    threading.Thread(target=cam.upload_loop,  daemon=True).start()
+    threading.Thread(target=cam.stats_loop,   daemon=True).start()
+
+    # 컨베이어 + 폴링
+    motor = build_motor()
+    threading.Thread(target=conveyor_loop,   args=(motor,), daemon=True).start()
+    threading.Thread(target=poll_server_loop,               daemon=True).start()
+
+    try:
+        print("🚀 시작됨 (CTRL+C 종료)")
+        while not stop_event.is_set():
+            time.sleep(1)
+    finally:
+        stop_event.set()
+        print("✅ 종료 정리 완료")
+
+if __name__ == "__main__":
+    main()
