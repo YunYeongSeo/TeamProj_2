@@ -64,7 +64,7 @@
 ## 📷 실행 영상 (YouTube)
 > 이미지 클릭 시 시연 영상이 재생됩니다.
 
-[![시연 영상](<img width="1327" height="745" alt="image" src="https://github.com/user-attachments/assets/ab10f993-7238-4dfc-be07-b44101f89dad" />)](https://youtu.be/0rgowFwegbI)
+[![시연 영상](https://github.com/user-attachments/assets/ab10f993-7238-4dfc-be07-b44101f89dad)](https://youtu.be/0rgowFwegbI)
 
 ---
 
