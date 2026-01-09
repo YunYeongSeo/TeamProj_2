@@ -62,8 +62,7 @@
 ---
 
 ## 📷 실행 영상 (YouTube)
-> 
-
+> (https://youtu.be/4vAkKQK-BAU)
 
 ---
 
