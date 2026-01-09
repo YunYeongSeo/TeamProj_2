@@ -61,8 +61,8 @@
 
 ---
 
-## 📷 실행 화면 (Screenshots)
-> ![Uploading image.png…]()
+## 📷 실행 영상 (YouTube)
+> 
 
 
 ---
