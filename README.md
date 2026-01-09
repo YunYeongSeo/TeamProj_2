@@ -22,7 +22,9 @@
   - Language : C++ 
   - Framework : MFC
   - DB : MySQL
-  - IDE : Visual Studio
+  - Server : Python (Flask)
+  - Embedded : Raspberry  Pi 4
+  - IDE : Visual Studio, Visual Studio Code
 
 ---
 
