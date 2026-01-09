@@ -62,7 +62,10 @@
 ---
 
 ## 📷 실행 영상 (YouTube)
-> (https://youtu.be/4vAkKQK-BAU)
+> - 이미지 클릭 시 시연영상이 재생됩니다.
+
+[![실행화면](<img width="1247" height="591" alt="image" src="https://github.com/user-attachments/assets/a2fcd023-f5be-4e89-9c5f-bba34c756598" />
+)](https://youtu.be/4vAkKQK-BAU)
 
 ---
 
